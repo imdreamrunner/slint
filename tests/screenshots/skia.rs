@@ -395,17 +395,27 @@ fn svg_rasterized_again_when_magnified() {
 }
 
 #[test]
-fn rendering_notifier_removes_repeated_elements() {
-    use i_slint_core::model::{Model, VecModel};
-    use slint_interpreter::Value;
+fn rendering_notifier_removes_elements() {
+    use i_slint_core::api::SetRenderingNotifierError;
+    use i_slint_core::model::VecModel;
+    use slint_interpreter::{ComponentHandle, Value};
 
     i_slint_core::platform::set_platform(Box::new(DirtyTargetBackend))
         .expect("platform already initialized");
 
     let source = r#"
         export component TestCase inherits Window {
+            background: white;
             in property <[int]> model;
-            for value in root.model: Rectangle {
+            in property <bool> condition: true;
+            for value[index] in root.model: Rectangle {
+                x: index * 2px;
+                width: 2px;
+                background: red;
+            }
+            if root.condition: Rectangle {
+                x: 6px;
+                width: 1px;
                 background: red;
             }
         }
@@ -425,25 +435,41 @@ fn rendering_notifier_removes_repeated_elements() {
         .set_rendering_notifier({
             let model = model.clone();
             let frame = frame.clone();
+            let component = component.as_weak();
             move |state, _| {
-                if matches!(state, slint_interpreter::RenderingState::BeforeRendering) {
-                    frame.set(frame.get() + 1);
-                    if frame.get() == 2 {
-                        model.set_vec(vec![Value::from(1.)]);
-                    }
+                if !matches!(state, slint_interpreter::RenderingState::BeforeRendering) {
+                    return;
                 }
+                frame.set(frame.get() + 1);
+                if frame.get() != 2 {
+                    return;
+                }
+                let component = component.upgrade().unwrap();
+                model.set_vec(vec![Value::from(1.)]);
+                component.set_property("condition", false.into()).unwrap();
+                // Runs every notifier call site again, while the notifier is running.
+                component.window().take_snapshot().unwrap();
+                assert!(matches!(
+                    component.window().set_rendering_notifier(|_, _| {}),
+                    Err(SetRenderingNotifierError::AlreadySet)
+                ));
             }
         })
         .unwrap();
     component.show().unwrap();
 
     let window = DIRTY_WINDOW.with(|dirty_window| dirty_window.borrow().clone()).unwrap();
-    for _ in 0..2 {
+    let red_columns = || {
+        let image = window.target.borrow_mut().image_snapshot();
+        let pixels = image.peek_pixels().unwrap();
+        (0..DIRTY_SIZE).filter(|&x| pixels.get_color((x, 0)).g() == 0).count()
+    };
+    for expected_red_columns in [7, 2, 2] {
         assert!(matches!(
             window.renderer.render(),
             Ok(i_slint_core::renderer::DrawOutcome::Success)
         ));
+        assert_eq!(red_columns(), expected_red_columns);
     }
-    assert_eq!(frame.get(), 2);
-    assert_eq!(model.row_count(), 1);
+    assert_eq!(frame.get(), 3);
 }
