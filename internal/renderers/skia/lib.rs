@@ -382,6 +382,7 @@ pub struct SkiaSharedContext(#[allow(dead_code)] Rc<SkiaSharedContextInner>);
 pub struct SkiaRenderer {
     maybe_window_adapter: RefCell<Option<Weak<dyn WindowAdapter>>>,
     rendering_notifier: RefCell<Option<Box<dyn RenderingNotifier>>>,
+    has_rendering_notifier: Cell<bool>,
     image_cache: ItemCache<Option<skia_safe::Image>>,
     layer_cache: ItemCache<Option<(PhysicalPoint, skia_safe::Image)>>,
     path_cache: ItemCache<Option<(Vector2D<f32, PhysicalPx>, skia_safe::Path)>>,
@@ -431,6 +432,7 @@ impl SkiaRenderer {
         Self {
             maybe_window_adapter: Default::default(),
             rendering_notifier: Default::default(),
+            has_rendering_notifier: Default::default(),
             image_cache: Default::default(),
             layer_cache: Default::default(),
             path_cache: Default::default(),
@@ -949,11 +951,7 @@ impl SkiaRenderer {
 
     fn partial_rendering_state(&self) -> Option<&PartialRenderingState> {
         // We don't know where the application might render to, so disable partial rendering.
-        if self.rendering_notifier.borrow().is_some() {
-            None
-        } else {
-            self.partial_rendering_state.as_ref()
-        }
+        if self.has_rendering_notifier.get() { None } else { self.partial_rendering_state.as_ref() }
     }
 }
 
@@ -970,6 +968,7 @@ impl i_slint_core::renderer::RendererSealed for SkiaRenderer {
         if notifier.replace(callback).is_some() {
             Err(SetRenderingNotifierError::AlreadySet)
         } else {
+            self.has_rendering_notifier.set(true);
             Ok(())
         }
     }

@@ -258,6 +258,12 @@ impl i_slint_renderer_skia::Surface for DirtySurface {
     fn bits_per_pixel(&self) -> Result<u8, PlatformError> {
         Ok(32)
     }
+
+    fn with_graphics_api(&self, callback: &mut dyn FnMut(i_slint_core::api::GraphicsAPI<'_>)) {
+        callback(i_slint_core::api::GraphicsAPI::NativeOpenGL {
+            get_proc_address: &|_| core::ptr::null(),
+        })
+    }
 }
 
 const DIRTY_SIZE: i32 = 8;
@@ -386,4 +392,58 @@ fn svg_rasterized_again_when_magnified() {
     let actual = magnified_later.window().take_snapshot().unwrap();
 
     assert!(actual.as_bytes() == expected.as_bytes(), "the magnified SVG wasn't rasterized again");
+}
+
+#[test]
+fn rendering_notifier_removes_repeated_elements() {
+    use i_slint_core::model::{Model, VecModel};
+    use slint_interpreter::Value;
+
+    i_slint_core::platform::set_platform(Box::new(DirtyTargetBackend))
+        .expect("platform already initialized");
+
+    let source = r#"
+        export component TestCase inherits Window {
+            in property <[int]> model;
+            for value in root.model: Rectangle {
+                background: red;
+            }
+        }
+    "#;
+    let result = poll_once(
+        slint_interpreter::Compiler::default().build_from_source(source.into(), Default::default()),
+    )
+    .unwrap();
+    assert!(!result.has_errors(), "{:?}", result.diagnostics().collect::<Vec<_>>());
+    let component = result.components().last().unwrap().create().unwrap();
+    let model = Rc::new(VecModel::from(vec![Value::from(1.), Value::from(2.), Value::from(3.)]));
+    component.set_property("model", Value::Model(model.clone().into())).unwrap();
+
+    let frame = Rc::new(Cell::new(0));
+    component
+        .window()
+        .set_rendering_notifier({
+            let model = model.clone();
+            let frame = frame.clone();
+            move |state, _| {
+                if matches!(state, slint_interpreter::RenderingState::BeforeRendering) {
+                    frame.set(frame.get() + 1);
+                    if frame.get() == 2 {
+                        model.set_vec(vec![Value::from(1.)]);
+                    }
+                }
+            }
+        })
+        .unwrap();
+    component.show().unwrap();
+
+    let window = DIRTY_WINDOW.with(|dirty_window| dirty_window.borrow().clone()).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            window.renderer.render(),
+            Ok(i_slint_core::renderer::DrawOutcome::Success)
+        ));
+    }
+    assert_eq!(frame.get(), 2);
+    assert_eq!(model.row_count(), 1);
 }
